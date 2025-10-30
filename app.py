@@ -1,9 +1,4 @@
-diff --git a/app.py b/app.py
-new file mode 100644
-index 0000000000000000000000000000000000000000..3aa220855aca1a14b04bf955b8b78087f6bf4f1d
---- /dev/null
-+++ b/app.py
-@@ -0,0 +1,476 @@
+
 +"""Streamlit application for analysing CrossFit sales data."""
 +from __future__ import annotations
 +
