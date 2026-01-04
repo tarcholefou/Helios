@@ -1,8 +1,10 @@
 # app.py — Helios Reporting (TVA PDF + Inscriptions CSV)
-# Refonte "Synthèse globale" :
-# - Vision globale sur tous les mois (CA total + catégories)
-# - Prévisionnel théorique sur 3 mois (méthode simple : moyenne mobile / tendance linéaire)
-# - État des lieux adhérents (à l’instant T) avec détail : abonnements actifs récurrents + carnets 10 actifs (option)
+# Dashboard Direction (pilotage box) :
+# - MRR / membres actifs / ARPU / churn / net adds (CSV)
+# - Drivers de CA (waterfall) (TVA)
+# - Retail efficacité (TVA)
+# - Forecast 3 mois basé sur MRR + hypothèses churn/acquisition
+# - Alertes (règles direction)
 
 import os
 import re
@@ -20,8 +22,8 @@ import altair as alt
 # =========================
 
 DATA_DIR = "data"
-HISTORY_TVA_FILE = os.path.join(DATA_DIR, "history_tva.csv")     # lignes de ventes (PDF TVA)
-HISTORY_ABOS_FILE = os.path.join(DATA_DIR, "history_abos.csv")   # inscriptions (CSV)
+HISTORY_TVA_FILE = os.path.join(DATA_DIR, "history_tva.csv")
+HISTORY_ABOS_FILE = os.path.join(DATA_DIR, "history_abos.csv")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 CATEGORIES_TVA = [
@@ -37,28 +39,29 @@ MOIS_FR = {
     9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre",
 }
 
+
 # =========================
-# PAGE / STYLE
+# PAGE / STYLE (moderne)
 # =========================
 
-st.set_page_config(page_title="Helios — Dashboard", layout="wide")
+st.set_page_config(page_title="Helios — Cockpit", layout="wide")
 
 st.markdown(
     """
     <style>
-      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1400px; }
+      .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1450px; }
       h1,h2,h3,h4 { font-family: -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif !important; }
 
-      /* Tabs pill */
-      .stTabs [data-baseweb="tab-list"] { gap: 0.5rem; }
+      /* Tabs pills */
+      .stTabs [data-baseweb="tab-list"] { gap: .5rem; }
       .stTabs [data-baseweb="tab"] {
-        padding: 0.42rem 1.05rem;
+        padding: .42rem 1.05rem;
         border-radius: 999px;
         background: rgba(2,6,23,.55);
         border: 1px solid rgba(148,163,184,.18);
       }
       .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #2563eb, #22c55e) !important;
+        background: linear-gradient(135deg, #7c3aed, #22c55e) !important;
         color: white !important;
       }
 
@@ -68,42 +71,52 @@ st.markdown(
       @media (max-width: 700px){ .kpiGrid{ grid-template-columns: repeat(1, 1fr);} }
 
       .kpiCard {
-        background: radial-gradient(1200px 500px at 20% 10%, rgba(37,99,235,.22), transparent 55%),
-                    radial-gradient(900px 400px at 80% 20%, rgba(34,197,94,.16), transparent 55%),
-                    linear-gradient(180deg, rgba(2,6,23,.72), rgba(2,6,23,.92));
+        background:
+          radial-gradient(1000px 420px at 20% 0%, rgba(124,58,237,.18), transparent 55%),
+          radial-gradient(900px 420px at 80% 10%, rgba(34,197,94,.14), transparent 55%),
+          linear-gradient(180deg, rgba(2,6,23,.72), rgba(2,6,23,.92));
         border: 1px solid rgba(148,163,184,.18);
-        box-shadow: 0 16px 32px rgba(0,0,0,.32);
+        box-shadow: 0 18px 40px rgba(0,0,0,.35);
         border-radius: 18px;
         padding: 16px 16px 14px 16px;
       }
-      .kpiTitle { color: rgba(226,232,240,.85); font-size: .92rem; margin-bottom: 6px; }
-      .kpiValue { font-size: 2.05rem; font-weight: 700; letter-spacing: -0.02em; }
+      .kpiTitle { color: rgba(226,232,240,.86); font-size: .92rem; margin-bottom: 6px; }
+      .kpiValue { font-size: 2.05rem; font-weight: 750; letter-spacing: -0.02em; }
       .kpiDelta { margin-top: 8px; display: inline-flex; gap: 8px; align-items: center; font-size: .95rem; }
       .badgeUp {
-        background: rgba(34,197,94,.18);
-        border: 1px solid rgba(34,197,94,.35);
+        background: rgba(34,197,94,.16);
+        border: 1px solid rgba(34,197,94,.33);
         color: rgb(74,222,128);
         padding: 3px 10px;
         border-radius: 999px;
-        font-weight: 600;
+        font-weight: 650;
       }
       .badgeDown {
-        background: rgba(239,68,68,.16);
-        border: 1px solid rgba(239,68,68,.35);
+        background: rgba(239,68,68,.14);
+        border: 1px solid rgba(239,68,68,.33);
         color: rgb(248,113,113);
         padding: 3px 10px;
         border-radius: 999px;
-        font-weight: 600;
+        font-weight: 650;
       }
       .muted { color: rgba(226,232,240,.72); font-size: .95rem; }
-      .section { margin-top: 10px; }
+      .section { margin-top: 12px; }
 
-      /* Make charts feel tighter */
+      /* little cards */
+      .miniCard {
+        background: rgba(2,6,23,.55);
+        border: 1px solid rgba(148,163,184,.18);
+        border-radius: 16px;
+        padding: 14px;
+      }
+
+      /* charts tighter */
       .stAltairChart { background: transparent !important; }
     </style>
     """,
     unsafe_allow_html=True,
 )
+
 
 # =========================
 # STREAMLIT COMPAT HELPERS
@@ -120,6 +133,7 @@ def show_df(df, height=None):
         st.dataframe(df, width="stretch", height=height)
     except TypeError:
         st.dataframe(df, use_container_width=True, height=height)
+
 
 # =========================
 # UTILS
@@ -201,8 +215,9 @@ def extract_period_from_text(text: str):
     mois = f"{d1.year}-{d1.month:02d}"
     return mois, d1.date().isoformat(), d2.date().isoformat()
 
+
 # =========================
-# ALTair THEME-ish
+# ALTAIR THEME
 # =========================
 
 def alt_base():
@@ -221,29 +236,6 @@ def alt_base():
         anchor="start",
         offset=10
     )
-
-def line_with_forecast(df_hist, df_fc, x="mois_label", y="CA", title=""):
-    # historical: solid
-    ch1 = (
-        alt.Chart(df_hist)
-        .mark_line(point=alt.OverlayMarkDef(size=70), strokeWidth=2.6)
-        .encode(
-            x=alt.X(f"{x}:N", title=None, sort=list(df_hist[x])),
-            y=alt.Y(f"{y}:Q", title="€"),
-            tooltip=[x, alt.Tooltip(y, format=",.0f")]
-        )
-    )
-    # forecast: dashed
-    ch2 = (
-        alt.Chart(df_fc)
-        .mark_line(strokeDash=[6, 4], strokeWidth=2.6, opacity=0.9)
-        .encode(
-            x=alt.X(f"{x}:N", title=None, sort=list(pd.concat([df_hist[x], df_fc[x]]))),
-            y=alt.Y(f"{y}:Q", title="€"),
-            tooltip=[x, alt.Tooltip(y, format=",.0f")]
-        )
-    )
-    return (ch1 + ch2).properties(height=280, title=title)
 
 def donut(df, label_col, value_col, title=""):
     if df.empty or df[value_col].sum() <= 0:
@@ -267,10 +259,23 @@ def donut(df, label_col, value_col, title=""):
             text=alt.Text("pct:Q", format=".1f")
         )
     )
-    return (arcs + txt).properties(height=290, title=title)
+    return (arcs + txt).properties(height=260, title=title)
 
-def grouped_bars(df, x, series, y, title=""):
-    # df must have columns x, series, y
+def line_chart(df, x, y, title="", height=260):
+    if df.empty:
+        return None
+    return (
+        alt.Chart(df)
+        .mark_line(point=alt.OverlayMarkDef(size=65), strokeWidth=2.6)
+        .encode(
+            x=alt.X(f"{x}:N", title=None, sort=list(df[x])),
+            y=alt.Y(f"{y}:Q", title="€"),
+            tooltip=[x, alt.Tooltip(y, format=",.0f")]
+        )
+        .properties(height=height, title=title)
+    )
+
+def grouped_bars(df, x, series, y, title="", height=240):
     if df.empty:
         return None
     return (
@@ -283,8 +288,24 @@ def grouped_bars(df, x, series, y, title=""):
             color=alt.Color(f"{series}:N", legend=alt.Legend(title=""), scale=alt.Scale(scheme="tableau10")),
             tooltip=[x, series, alt.Tooltip(y, format=",.0f")]
         )
-        .properties(height=260, title=title)
+        .properties(height=height, title=title)
     )
+
+def waterfall_drivers(df, x="driver", y="delta", title="", height=230):
+    if df.empty:
+        return None
+    return (
+        alt.Chart(df)
+        .mark_bar(cornerRadiusTopLeft=8, cornerRadiusTopRight=8)
+        .encode(
+            x=alt.X(f"{x}:N", title=None, sort=None),
+            y=alt.Y(f"{y}:Q", title="Δ €"),
+            color=alt.condition(alt.datum.delta >= 0, alt.value("#22c55e"), alt.value("#ef4444")),
+            tooltip=[x, alt.Tooltip(y, format=",.0f")]
+        )
+        .properties(height=height, title=title)
+    )
+
 
 # =========================
 # TVA — CATEGORISATION
@@ -316,6 +337,7 @@ def categorize_product_tva(name: str):
         return "Vestimentaire & accessoires sport", "Textile / accessoires"
 
     return "AUTRE", "AUTRE"
+
 
 # =========================
 # PDF TVA — EXTRACTION
@@ -390,6 +412,7 @@ def extract_sales_tables_from_pdf(file_obj: BytesIO, forced_month: str = None) -
     full_df["sous_categorie"] = cats.apply(lambda x: x[1])
     return full_df
 
+
 # =========================
 # HISTO TVA
 # =========================
@@ -418,6 +441,7 @@ def build_month_summary_tva(df_hist: pd.DataFrame) -> pd.DataFrame:
     df = df_hist.copy()
     df["total_ttc"] = df["total_ttc"].apply(to_float)
     df["quantite"] = df["quantite"].apply(to_int)
+
     out = df.groupby("mois").agg(
         CA_total=("total_ttc", "sum"),
         Qt_total=("quantite", "sum"),
@@ -430,7 +454,9 @@ def build_month_summary_tva(df_hist: pd.DataFrame) -> pd.DataFrame:
 
     out = out.fillna(0.0)
     out = out.sort_values("mois", key=lambda s: s.map(lambda x: datetime.strptime(x, "%Y-%m")))
+    out["mois_label"] = out["mois"].apply(format_mois_label)
     return out
+
 
 # =========================
 # CSV INSCRIPTIONS — CLASSIF
@@ -438,39 +464,34 @@ def build_month_summary_tva(df_hist: pd.DataFrame) -> pd.DataFrame:
 
 def classify_contrat(offre: str):
     """
-    Demandes :
-      - "Liberté" = Carnet 10 séances (pas abonnement)
-      - "Drop in" exclu
-      - Events exclus
-      - Abonnements = offres normales (Essentiel/Evolution/Premium/Hyrox/1x semaine/Ascension...)
+    Règles :
+    - "Liberté" = Carnet 10 séances (pas abonnement)
+    - "Drop in" exclu
+    - Events exclus
+    - Abonnements = offres normales
     """
     s = (offre or "").lower().strip()
 
-    # Events (exclu)
     if any(k in s for k in ["soirée", "soiree", "inauguration", "raclette", "event", "offre de rentrée", "offre de rentree"]):
         return ("EVENT", offre)
 
-    # Drop-in (exclu)
     if "drop" in s:
         return ("EXCLU", "Drop in")
 
-    # Liberté = carnet 10
     if "liberté" in s or "liberte" in s:
         return ("CARTE_10", "Carnet 10 séances")
 
-    # Abonnements
     abo_keywords = ["essentiel", "evolution", "premium", "hyrox", "1x semaine", "1 x semaine", "ascension"]
     if any(k in s for k in abo_keywords):
         return ("ABONNEMENT", offre)
 
-    # par défaut : exclu
     return ("EXCLU", offre)
 
 def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     df_raw = pd.read_csv(file_obj)
     df_raw.columns = [c.strip() for c in df_raw.columns]
 
-    # Détection "date de création"
+    # Détection robuste "date création"
     date_col = None
     for c in df_raw.columns:
         lc = c.lower()
@@ -526,6 +547,18 @@ def extract_abos_from_csv(file_obj: BytesIO) -> pd.DataFrame:
     df["entrees_restantes"] = df.get("entrees_restantes", 0).apply(to_int)
     df["entrees_max"] = df.get("entrees_max", 0).apply(to_int)
 
+    # Identifiant (pour cohortes / churn) — email en priorité, sinon téléphone
+    df["email_norm"] = df.get("email", "").astype(str).str.strip().str.lower()
+    df["tel_norm"] = df.get("telephone", "").astype(str).str.replace(" ", "").str.strip()
+    df["member_key"] = df.apply(
+        lambda r: r["email_norm"] if r["email_norm"] not in ("", "nan", "none") else r["tel_norm"],
+        axis=1
+    )
+    # clé contrat (même personne + même offre + date début)
+    df["contract_key"] = df.apply(
+        lambda r: f"{r.get('member_key','')}|{r.get('sous_type','')}|{r.get('date_debut_parsed', '')}",
+        axis=1
+    )
     return df
 
 def load_history_abos() -> pd.DataFrame:
@@ -539,145 +572,120 @@ def load_history_abos() -> pd.DataFrame:
 def save_history_abos(df: pd.DataFrame):
     df.to_csv(HISTORY_ABOS_FILE, index=False)
 
+
 # =========================
-# ABOS ACTIFS + FORECAST
+# ABOS ACTIFS + CHURN + FORECAST
 # =========================
 
-def compute_active_members(df_abos: pd.DataFrame, ref_dt: date):
+def month_end(ym: str) -> date:
+    dt = datetime.strptime(ym, "%Y-%m")
+    if dt.month == 12:
+        nxt = date(dt.year + 1, 1, 1)
+    else:
+        nxt = date(dt.year, dt.month + 1, 1)
+    return nxt - timedelta(days=1)
+
+def compute_active_recurring_subs_at(df_abos: pd.DataFrame, ref_dt: date) -> pd.DataFrame:
     """
-    Retourne :
-      - df_sub_active : abonnements actifs récurrents (Reconduction != Non), VALIDATED, dates OK
-      - df_carnet_active : carnets 10 "actifs" (VALIDATED et entrées_restantes > 0), dates si dispo
+    Abonnements actifs récurrents uniquement (direction) :
+    - type_contrat=ABONNEMENT
+    - Reconduction ≠ Non (vide = récurrent)
+    - statut VALIDATED (ou FUTURE si chevauche)
+    - date_debut <= ref_dt <= date_fin (ou date_fin vide)
     """
     if df_abos is None or df_abos.empty:
-        return pd.DataFrame(), pd.DataFrame()
-
-    df = df_abos.copy()
-    for col in ["statut", "reconduction", "type_contrat", "prix_effectif", "date_debut_parsed", "date_fin_parsed", "entrees_restantes", "sous_type"]:
-        if col not in df.columns:
-            df[col] = None
-
-    df["statut_norm"] = df["statut"].astype(str).str.upper()
-    df["reconduction_norm"] = df["reconduction"].astype(str).str.strip().str.lower()
-
-    # ABONNEMENTS récurrents actifs
-    recurring = df["reconduction_norm"] != "non"  # vide = récurrent
-    sub = df[(df["type_contrat"] == "ABONNEMENT") & recurring].copy()
-
-    sub_active = sub[
-        (sub["statut_norm"] == "VALIDATED") &
-        sub["date_debut_parsed"].notna() &
-        (sub["date_debut_parsed"] <= ref_dt) &
-        (sub["date_fin_parsed"].isna() | (sub["date_fin_parsed"] >= ref_dt))
-    ].copy()
-
-    # Carnets 10 actifs (si tu veux les compter comme "adhérents actifs")
-    carnet = df[df["type_contrat"] == "CARTE_10"].copy()
-    carnet_active = carnet[
-        (carnet["statut_norm"] == "VALIDATED") &
-        (carnet["entrees_restantes"].fillna(0).astype(int) > 0)
-    ].copy()
-
-    return sub_active, carnet_active
-
-def compute_subscription_projection_next_month(df_abos: pd.DataFrame, ref_dt: date):
-    """
-    Projection CA mois suivant basé uniquement sur les abonnements récurrents (pas carnets, pas events).
-    """
-    if df_abos is None or df_abos.empty:
-        return 0.0, None
-
-    df = df_abos.copy()
-    for col in ["statut", "reconduction", "type_contrat", "prix_effectif", "date_debut_parsed", "date_fin_parsed"]:
-        if col not in df.columns:
-            df[col] = None
-
-    df["statut_norm"] = df["statut"].astype(str).str.upper()
-    df["reconduction_norm"] = df["reconduction"].astype(str).str.strip().str.lower()
-
-    recurring = df["reconduction_norm"] != "non"
-    df = df[(df["type_contrat"] == "ABONNEMENT") & recurring].copy()
-    if df.empty:
-        return 0.0, None
-
-    # bornes mois suivant
-    if ref_dt.month == 12:
-        nm_start = date(ref_dt.year + 1, 1, 1)
-    else:
-        nm_start = date(ref_dt.year, ref_dt.month + 1, 1)
-    if nm_start.month == 12:
-        after = date(nm_start.year + 1, 1, 1)
-    else:
-        after = date(nm_start.year, nm_start.month + 1, 1)
-    nm_end = after - timedelta(days=1)
-
-    proj = df[
-        df["date_debut_parsed"].notna() &
-        (df["date_debut_parsed"] <= nm_end) &
-        (df["date_fin_parsed"].isna() | (df["date_fin_parsed"] >= nm_start)) &
-        df["statut_norm"].isin(["VALIDATED", "FUTURE"])
-    ].copy()
-
-    ca = proj["prix_effectif"].apply(to_float).sum()
-    label = f"{MOIS_FR[nm_start.month]} {nm_start.year}"
-    return ca, label
-
-def forecast_next_3_months(summary_tva: pd.DataFrame, method: str = "Moyenne mobile (3 mois)"):
-    """
-    Forecast CA_total (et catégories par ratio moyen) sur 3 mois.
-    Méthodes:
-      - Moyenne mobile (3 mois) : moyenne des 3 derniers points
-      - Tendance linéaire : régression simple sur l'index temps
-    """
-    if summary_tva is None or summary_tva.empty:
         return pd.DataFrame()
 
-    s = summary_tva.sort_values("mois").copy()
-    last_mois = s["mois"].iloc[-1]
-    horizon = [month_add(last_mois, i) for i in [1, 2, 3]]
+    df = df_abos.copy()
+    for col in ["type_contrat","reconduction","statut","date_debut_parsed","date_fin_parsed","prix_effectif","contract_key","sous_type","offre"]:
+        if col not in df.columns:
+            df[col] = None
 
-    # ratios catégorie moyens (sur 3 derniers mois)
-    tail = s.tail(3).copy()
-    total_tail = tail["CA_total"].sum() if tail["CA_total"].sum() > 0 else 1.0
-    ratios = {}
-    for cat in CATEGORIES_TVA:
-        col = f"CA_{cat}"
-        if col in tail.columns:
-            ratios[cat] = tail[col].sum() / total_tail
+    df["reconduction_norm"] = df["reconduction"].astype(str).str.strip().str.lower()
+    recurring = df["reconduction_norm"] != "non"
+    df["statut_norm"] = df["statut"].astype(str).str.upper()
+
+    sub = df[(df["type_contrat"] == "ABONNEMENT") & recurring].copy()
+    sub = sub[sub["date_debut_parsed"].notna()]
+    sub_act = sub[
+        (sub["date_debut_parsed"] <= ref_dt) &
+        (sub["date_fin_parsed"].isna() | (sub["date_fin_parsed"] >= ref_dt)) &
+        (sub["statut_norm"].isin(["VALIDATED", "FUTURE"]))
+    ].copy()
+
+    sub_act["prix_effectif"] = sub_act["prix_effectif"].apply(to_float)
+    return sub_act
+
+def compute_churn_metrics(df_abos: pd.DataFrame, months: list[str]) -> pd.DataFrame:
+    """
+    Churn approximé par "cohorte active fin de mois" :
+    - Active fin mois M-1
+    - Active fin mois M
+    Churn M = (perdus) / (actifs M-1)
+    New adds M = (nouveaux dans M) = actifs M - intersection
+    Net adds = new - lost
+    """
+    if df_abos is None or df_abos.empty or len(months) < 2:
+        return pd.DataFrame()
+
+    rows = []
+    prev_set = None
+    prev_count = None
+
+    for ym in months:
+        ref = month_end(ym)
+        act = compute_active_recurring_subs_at(df_abos, ref_dt=ref)
+        keys = set(act["contract_key"].astype(str).tolist())
+        count = len(keys)
+        mrr = act["prix_effectif"].sum()
+
+        if prev_set is None:
+            rows.append({"mois": ym, "actifs": count, "mrr": mrr, "new": None, "lost": None, "net_adds": None, "churn_pct": None, "arpu": (mrr / count) if count else 0.0})
         else:
-            ratios[cat] = 0.0
+            retained = len(keys & prev_set)
+            lost = len(prev_set - keys)
+            new = len(keys - prev_set)
+            churn = (lost / prev_count * 100) if prev_count else None
+            net = new - lost
+            rows.append({"mois": ym, "actifs": count, "mrr": mrr, "new": new, "lost": lost, "net_adds": net, "churn_pct": churn, "arpu": (mrr / count) if count else 0.0})
 
-    if method.startswith("Moyenne mobile"):
-        base = s.tail(3)["CA_total"].mean()
-        preds = [base, base, base]
-    else:
-        # Tendance linéaire y = a*x + b
-        y = s["CA_total"].astype(float).values
-        x = list(range(len(y)))
-        if len(y) < 2:
-            preds = [float(y[-1]), float(y[-1]), float(y[-1])]
-        else:
-            # calc a,b
-            x_mean = sum(x) / len(x)
-            y_mean = float(sum(y) / len(y))
-            num = sum((xi - x_mean) * (yi - y_mean) for xi, yi in zip(x, y))
-            den = sum((xi - x_mean) ** 2 for xi in x) or 1.0
-            a = num / den
-            b = y_mean - a * x_mean
-            x_future = [len(y) + i for i in [0, 1, 2]]
-            preds = [max(0.0, a * xf + b) for xf in x_future]
+        prev_set = keys
+        prev_count = count
 
-    fc = pd.DataFrame({"mois": horizon, "CA_total": preds})
-    # ventiler par catégories via ratio
-    for cat in CATEGORIES_TVA:
-        fc[f"CA_{cat}"] = fc["CA_total"] * ratios.get(cat, 0.0)
-    return fc
+    df = pd.DataFrame(rows)
+    df["mois_label"] = df["mois"].apply(format_mois_label)
+    return df
+
+def forecast_mrr_3_months(current_actifs: int, current_mrr: float, arpu: float, churn_pct: float, new_adds: int, start_month: str):
+    """
+    Forecast simple direction :
+    MRR(t+1) = MRR(t) * (1 - churn) + new_adds * ARPU
+    Actifs(t+1) = Actifs(t) * (1 - churn) + new_adds
+    sur 3 mois
+    """
+    churn = max(0.0, churn_pct) / 100.0
+    rows = []
+    actifs = float(current_actifs)
+    mrr = float(current_mrr)
+
+    for i in [1, 2, 3]:
+        m = month_add(start_month, i)
+        # pertes
+        lost = actifs * churn
+        actifs = max(0.0, actifs - lost + new_adds)
+        mrr = max(0.0, mrr * (1 - churn) + new_adds * arpu)
+        rows.append({"mois": m, "actifs": round(actifs), "mrr": mrr})
+
+    df = pd.DataFrame(rows)
+    df["mois_label"] = df["mois"].apply(format_mois_label)
+    return df
+
 
 # =========================
 # APP HEADER
 # =========================
 
-st.title("Synthèse & pilotage — Helios CrossFit")
+st.title("Helios — Cockpit de pilotage")
 
 tabs = st.tabs([
     "📊 Dashboard Direction",
@@ -689,17 +697,19 @@ tabs = st.tabs([
 
 tab_dash, tab_mensuel, tab_comp, tab_detail, tab_import = tabs
 
+
 # =========================
 # IMPORT TAB
 # =========================
 
 with tab_import:
     st.subheader("Import de données")
+
     st.markdown(
         """
         <div class="muted">
-        • PDF TVA : sélectionne l’année + le mois, puis importe le PDF → remplace uniquement ce mois dans l’historique TVA.<br>
-        • CSV Inscriptions : importe le CSV → remplace entièrement l’historique inscriptions (plus à jour).
+        <b>TVA PDF</b> : tu choisis année + mois, puis tu importes → l’app remplace uniquement ce mois (pas d’écrasement global).<br>
+        <b>CSV inscriptions</b> : tu importes le CSV → l’app remplace l’historique inscriptions (logique “plus à jour”).
         </div>
         """,
         unsafe_allow_html=True
@@ -755,6 +765,7 @@ with tab_import:
                 st.success(f"✅ CSV importé — {len(df_abos_new)} lignes — {format_mois_label(months[0])} → {format_mois_label(months[-1])}")
                 show_df(df_abos_new.head(30), height=340)
 
+
 # =========================
 # LOAD DATA
 # =========================
@@ -771,296 +782,389 @@ if has_tva:
     df_hist_tva["quantite"] = df_hist_tva["quantite"].apply(to_int)
     mois_dispo = sort_months(df_hist_tva["mois"].unique())
     summary_tva = build_month_summary_tva(df_hist_tva)
-    summary_tva["mois_label"] = summary_tva["mois"].apply(format_mois_label)
 else:
     mois_dispo = []
     summary_tva = pd.DataFrame()
 
 if has_abos:
-    # sécurité colonnes/parse si ancien import
+    # Parse si import plus ancien
     if "date_debut_parsed" not in df_abos.columns and "date_debut" in df_abos.columns:
         df_abos["date_debut_parsed"] = df_abos["date_debut"].apply(parse_simple_date)
     if "date_fin_parsed" not in df_abos.columns and "date_fin" in df_abos.columns:
         df_abos["date_fin_parsed"] = df_abos["date_fin"].apply(parse_simple_date)
-    for col in ["entrees_restantes", "entrees_max"]:
+    for col in ["prix_effectif", "prix_offre", "prix_perso"]:
         if col in df_abos.columns:
-            df_abos[col] = df_abos[col].apply(to_int)
+            df_abos[col] = df_abos[col].apply(to_float)
+    # fallback si l’identifiant n’existe pas (ancien fichier)
+    if "email_norm" not in df_abos.columns:
+        df_abos["email_norm"] = df_abos.get("email", "").astype(str).str.strip().str.lower()
+    if "tel_norm" not in df_abos.columns:
+        df_abos["tel_norm"] = df_abos.get("telephone", "").astype(str).str.replace(" ", "").str.strip()
+    if "member_key" not in df_abos.columns:
+        df_abos["member_key"] = df_abos.apply(
+            lambda r: r["email_norm"] if r["email_norm"] not in ("", "nan", "none") else r["tel_norm"],
+            axis=1
+        )
+    if "contract_key" not in df_abos.columns:
+        df_abos["contract_key"] = df_abos.apply(
+            lambda r: f"{r.get('member_key','')}|{r.get('sous_type','')}|{r.get('date_debut_parsed', '')}",
+            axis=1
+        )
+
 
 # =========================
-# DASHBOARD DIRECTION (global + forecast + adhérents)
+# DASHBOARD DIRECTION
 # =========================
 
 with tab_dash:
-    st.subheader("Synthèse globale — Dashboard Direction")
+    st.subheader("Dashboard Direction — cockpit")
 
     if not has_tva:
         st.warning("Aucune donnée TVA importée. Va dans l’onglet Import.")
+        st.stop()
+
+    # ====== Paramètres direction (sliders)
+    with st.expander("Paramètres direction (seuils & hypothèses)", expanded=False):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            churn_alert = st.slider("Alerte churn (%)", 1.0, 25.0, 7.0, 0.5)
+        with c2:
+            arpu_drop_alert = st.slider("Alerte baisse ARPU (%)", 1.0, 40.0, 10.0, 1.0)
+        with c3:
+            abos_share_alert = st.slider("Alerte % CA Abos/Cartes min", 10.0, 95.0, 75.0, 1.0)
+        with c4:
+            top1_retail_alert = st.slider("Alerte dépendance Top1 retail (%)", 10.0, 80.0, 35.0, 1.0)
+
+    # ====== Focus mois (mais synthèse globale visible)
+    mois_focus = st.selectbox(
+        "Mois analysé (pour les KPI du mois)",
+        mois_dispo,
+        index=len(mois_dispo)-1,
+        format_func=format_mois_label,
+        key="dir_mois"
+    )
+    idx = mois_dispo.index(mois_focus)
+    mois_prev = mois_dispo[idx-1] if idx >= 1 else None
+
+    row_m = summary_tva[summary_tva["mois"] == mois_focus].iloc[0]
+    ca_m = float(row_m["CA_total"])
+    abos_ca_m = float(row_m.get("CA_Abonnements / cartes", 0.0))
+    retail_ca_m = ca_m - abos_ca_m
+    share_abos = (abos_ca_m / ca_m * 100) if ca_m else 0.0
+
+    if mois_prev:
+        row_p = summary_tva[summary_tva["mois"] == mois_prev].iloc[0]
+        ca_p = float(row_p["CA_total"])
+        delta_ca = ca_m - ca_p
+        delta_pct = (delta_ca / ca_p * 100) if ca_p else None
     else:
-        # --- Controls
-        left, right = st.columns([1.4, 1.0])
-        with left:
-            st.markdown("<div class='muted'>Vision globale : tous les mois + prévisionnel sur 3 mois.</div>", unsafe_allow_html=True)
-        with right:
-            method = st.selectbox(
-                "Méthode prévisionnelle",
-                ["Moyenne mobile (3 mois)", "Tendance linéaire"],
-                index=0,
-                key="fc_method"
-            )
+        ca_p, delta_ca, delta_pct = None, None, None
 
-        # --- Build forecast
-        fc = forecast_next_3_months(summary_tva, method=method)
-        if not fc.empty:
-            fc["mois_label"] = fc["mois"].apply(format_mois_label)
+    # ====== CSV (MRR / actifs / churn / net adds)
+    today = datetime.today().date()
+    sub_active_now = compute_active_recurring_subs_at(df_abos, today) if has_abos else pd.DataFrame()
+    actifs_now = int(len(sub_active_now))
+    mrr_now = float(sub_active_now["prix_effectif"].sum()) if not sub_active_now.empty else 0.0
+    arpu_now = (mrr_now / actifs_now) if actifs_now else 0.0
 
-        # --- KPIs (dernier mois + delta + cumuls)
-        last = summary_tva.sort_values("mois").iloc[-1]
-        last_mois = last["mois"]
-        last_label = last["mois_label"]
-        ca_last = float(last["CA_total"])
-        qt_last = int(last["Qt_total"])
+    # Churn historique (sur les mois TVA disponibles, pour coller au pilotage mensuel)
+    churn_df = pd.DataFrame()
+    if has_abos and len(mois_dispo) >= 2:
+        churn_df = compute_churn_metrics(df_abos, mois_dispo)
+    churn_last = None
+    arpu_prev = None
+    net_adds_last = None
+    if not churn_df.empty:
+        # prendre la dernière ligne qui a churn calculé
+        last_churn_row = churn_df.dropna(subset=["churn_pct"]).tail(1)
+        if not last_churn_row.empty:
+            churn_last = float(last_churn_row["churn_pct"].iloc[0])
+            net_adds_last = int(last_churn_row["net_adds"].iloc[0])
 
-        prev = summary_tva.sort_values("mois").iloc[-2] if len(summary_tva) >= 2 else None
-        ca_prev = float(prev["CA_total"]) if prev is not None else None
-        delta_abs = (ca_last - ca_prev) if (ca_prev is not None) else None
-        delta_pct = ((delta_abs / ca_prev) * 100) if (ca_prev not in (None, 0)) else None
+        # arpu vs mois-1 (dans churn_df)
+        last2 = churn_df.tail(2)
+        if len(last2) == 2:
+            arpu_prev = float(last2["arpu"].iloc[0])
 
-        ca_total_all = float(summary_tva["CA_total"].sum())
-        ca_avg = float(summary_tva["CA_total"].mean())
+    # ====== KPI Cards direction (4)
+    def badge_delta(val_abs, val_pct):
+        if val_abs is None or val_pct is None:
+            return "<div class='kpiDelta'><span class='muted'>Δ non dispo</span></div>"
+        cls = "badgeUp" if val_abs >= 0 else "badgeDown"
+        sign = "+" if val_abs >= 0 else ""
+        return f"<div class='kpiDelta'><span class='{cls}'>{sign}{val_abs:,.0f} € ({sign}{val_pct:.1f}%)</span><span class='muted'>vs mois-1</span></div>"
 
-        # Abos (projection / actifs)
-        today = datetime.today().date()
-        sub_active, carnet_active = compute_active_members(df_abos, today) if has_abos else (pd.DataFrame(), pd.DataFrame())
-        ca_proj_next, next_label = compute_subscription_projection_next_month(df_abos, today) if has_abos else (0.0, None)
+    st.markdown(
+        f"""
+        <div class="kpiGrid">
+          <div class="kpiCard">
+            <div class="kpiTitle">CA total (TVA) — {format_mois_label(mois_focus)}</div>
+            <div class="kpiValue">{ca_m:,.0f} €</div>
+            {badge_delta(delta_ca, delta_pct) if mois_prev else "<div class='kpiDelta'><span class='muted'>Δ non dispo</span></div>"}
+          </div>
+          <div class="kpiCard">
+            <div class="kpiTitle">MRR (abos récurrents actifs) — instant T</div>
+            <div class="kpiValue">{mrr_now:,.0f} €</div>
+            <div class="kpiDelta"><span class="muted">Actifs :</span><span class="muted">{actifs_now}</span></div>
+          </div>
+          <div class="kpiCard">
+            <div class="kpiTitle">ARPU (MRR / abonnés) — instant T</div>
+            <div class="kpiValue">{arpu_now:,.0f} €</div>
+            {"<div class='kpiDelta'><span class='muted'>Δ ARPU non dispo</span></div>" if arpu_prev is None else (
+                f"<div class='kpiDelta'><span class='{('badgeDown' if (arpu_now < arpu_prev) else 'badgeUp')}'>{(arpu_now-arpu_prev):+.0f} €</span><span class='muted'>vs mois-1</span></div>"
+            )}
+          </div>
+          <div class="kpiCard">
+            <div class="kpiTitle">Churn (approx fin de mois)</div>
+            <div class="kpiValue">{('N/A' if churn_last is None else f'{churn_last:.1f}%')}</div>
+            <div class="kpiDelta"><span class="muted">Net adds :</span><span class="muted">{('N/A' if net_adds_last is None else net_adds_last)}</span></div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
-        nb_sub_active = int(len(sub_active))
-        nb_carnet_active = int(len(carnet_active))
-        nb_members_total = nb_sub_active + nb_carnet_active  # état des lieux "adhérents" élargi (abos + carnets actifs)
+    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
 
-        # --- KPI Cards
-        # Card 1 (CA dernier mois + delta)
-        delta_html = ""
-        if delta_abs is not None and delta_pct is not None:
-            badge = "badgeUp" if delta_abs >= 0 else "badgeDown"
-            sign = "+" if delta_abs >= 0 else ""
-            delta_html = f"<div class='kpiDelta'><span class='{badge}'>{sign}{delta_abs:,.0f} € ({sign}{delta_pct:.1f}%)</span><span class='muted'>vs mois-1</span></div>"
-        else:
-            delta_html = "<div class='kpiDelta'><span class='muted'>Δ non disponible</span></div>"
+    # ====== Ligne CA global (tous mois) + focus
+    df_line = summary_tva[["mois_label", "CA_total"]].rename(columns={"CA_total": "CA"})
+    ch = line_chart(df_line, "mois_label", "CA", "CA total — historique (TVA)", height=240)
+    if ch is not None:
+        show_chart(alt_base() + ch)
 
-        st.markdown(
-            f"""
-            <div class="kpiGrid">
-              <div class="kpiCard">
-                <div class="kpiTitle">CA total (TVA) — {last_label}</div>
-                <div class="kpiValue">{ca_last:,.0f} €</div>
-                {delta_html}
-              </div>
-              <div class="kpiCard">
-                <div class="kpiTitle">Quantités vendues (TVA) — {last_label}</div>
-                <div class="kpiValue">{qt_last}</div>
-                <div class="kpiDelta"><span class="muted">Moyenne CA mensuelle :</span><span class="muted">{ca_avg:,.0f} €</span></div>
-              </div>
-              <div class="kpiCard">
-                <div class="kpiTitle">CA cumulé (tous mois TVA)</div>
-                <div class="kpiValue">{ca_total_all:,.0f} €</div>
-                <div class="kpiDelta"><span class="muted">Nb mois :</span><span class="muted">{len(summary_tva)}</span></div>
-              </div>
-              <div class="kpiCard">
-                <div class="kpiTitle">Adhérents actifs (instant T)</div>
-                <div class="kpiValue">{nb_members_total}</div>
-                <div class="kpiDelta"><span class="muted">{nb_sub_active} abos récurrents</span><span class="muted">•</span><span class="muted">{nb_carnet_active} carnets actifs</span></div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True
+    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
+
+    # ====== Drivers de CA (waterfall) : delta par catégorie entre mois_focus et mois_prev
+    st.markdown("### Drivers du CA (Δ mois vs mois-1)")
+    if not mois_prev:
+        st.info("Il faut au moins 2 mois importés pour calculer les drivers.")
+    else:
+        drivers = []
+        for cat in CATEGORIES_TVA:
+            d = float(row_m.get(f"CA_{cat}", 0.0)) - float(row_p.get(f"CA_{cat}", 0.0))
+            drivers.append({"driver": cat, "delta": d})
+        df_drv = pd.DataFrame(drivers)
+
+        col1, col2 = st.columns([1.0, 1.0])
+        with col1:
+            ch_drv = waterfall_drivers(df_drv, title=f"Δ CA par catégorie — {format_mois_label(mois_prev)} → {format_mois_label(mois_focus)}", height=230)
+            if ch_drv is not None:
+                show_chart(alt_base() + ch_drv)
+        with col2:
+            df_drv2 = df_drv.copy()
+            df_drv2["delta"] = df_drv2["delta"].round(0)
+            show_df(df_drv2.sort_values("delta", ascending=False), height=240)
+
+    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
+
+    # ====== Mix du CA (donut) + alertes structure
+    st.markdown("### Structure du CA (TVA)")
+    df_cat = pd.DataFrame([{
+        "Catégorie": cat,
+        "CA": float(row_m.get(f"CA_{cat}", 0.0))
+    } for cat in CATEGORIES_TVA]).sort_values("CA", ascending=False)
+
+    col1, col2 = st.columns([1.0, 1.0])
+    with col1:
+        ch_mix = donut(df_cat, "Catégorie", "CA", title=f"Mix CA — {format_mois_label(mois_focus)}")
+        if ch_mix is not None:
+            show_chart(alt_base() + ch_mix)
+    with col2:
+        df_cat["%"] = (df_cat["CA"] / df_cat["CA"].sum() * 100).round(1) if df_cat["CA"].sum() else 0
+        show_df(df_cat, height=260)
+
+    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
+
+    # ====== Retail efficacité (TVA) : tout sauf Abonnements/cartes
+    st.markdown("### Retail — efficacité (TVA)")
+    df_m_lines = df_hist_tva[df_hist_tva["mois"] == mois_focus].copy()
+    df_retail = df_m_lines[df_m_lines["categorie"] != "Abonnements / cartes"].copy()
+
+    retail_share = (retail_ca_m / ca_m * 100) if ca_m else 0.0
+    top1_share = 0.0
+    top1_name = None
+
+    if not df_retail.empty:
+        top_prod = (
+            df_retail.groupby("designation", as_index=False)
+            .agg(CA=("total_ttc", "sum"), Qt=("quantite", "sum"))
+            .sort_values("CA", ascending=False)
         )
+        if not top_prod.empty and float(top_prod["CA"].sum()) > 0:
+            top1_name = str(top_prod.iloc[0]["designation"])
+            top1_share = float(top_prod.iloc[0]["CA"]) / float(top_prod["CA"].sum()) * 100
 
-        st.markdown("<div class='section'></div>", unsafe_allow_html=True)
+    colA, colB, colC, colD = st.columns(4)
+    colA.metric("CA retail", f"{retail_ca_m:,.0f} €".replace(",", " "))
+    colB.metric("% retail du CA", f"{retail_share:.1f}%")
+    colC.metric("Produit #1 retail", (top1_name[:24] + "…") if top1_name and len(top1_name) > 25 else (top1_name or "N/A"))
+    colD.metric("Dépendance Top1 (retail)", f"{top1_share:.1f}%")
 
-        # --- Global timeline (CA total + forecast)
-        hist_line = summary_tva[["mois_label", "CA_total"]].rename(columns={"CA_total": "CA"})
-        fc_line = fc[["mois_label", "CA_total"]].rename(columns={"CA_total": "CA"}) if not fc.empty else pd.DataFrame(columns=["mois_label", "CA"])
-
-        chart = line_with_forecast(hist_line, fc_line, x="mois_label", y="CA", title="CA total (historique) + prévisionnel (3 mois)")
-        show_chart(alt_base() + chart)
-
-        # --- Catégories : comparaison mensuelle claire (grouped bars) + forecast
-        # Build long format for historical categories
-        long_hist = []
-        for _, r in summary_tva.iterrows():
-            for cat in CATEGORIES_TVA:
-                long_hist.append({
-                    "mois_label": r["mois_label"],
-                    "Période": "Historique",
-                    "Catégorie": cat,
-                    "CA": float(r.get(f"CA_{cat}", 0.0))
-                })
-        df_long_hist = pd.DataFrame(long_hist)
-
-        # Forecast in long format
-        df_long_fc = pd.DataFrame()
-        if not fc.empty:
-            long_fc = []
-            for _, r in fc.iterrows():
-                for cat in CATEGORIES_TVA:
-                    long_fc.append({
-                        "mois_label": r["mois_label"],
-                        "Période": "Prévision",
-                        "Catégorie": cat,
-                        "CA": float(r.get(f"CA_{cat}", 0.0))
-                    })
-            df_long_fc = pd.DataFrame(long_fc)
-
-        # For readability, show last N months + forecast
-        n_show = min(6, len(mois_dispo))
-        months_show = [format_mois_label(m) for m in mois_dispo[-n_show:]]
-        if not fc.empty:
-            months_show += list(fc["mois_label"].values)
-
-        df_cat_plot = pd.concat([df_long_hist, df_long_fc], ignore_index=True)
-        df_cat_plot = df_cat_plot[df_cat_plot["mois_label"].isin(months_show)]
-
-        # We want grouped-by-category per month, but also differentiate historique vs prévision.
-        # We'll encode "Série" = Catégorie, and opacity based on "Période"
-        if not df_cat_plot.empty:
-            ch_cat = (
-                alt.Chart(df_cat_plot)
-                .mark_bar(cornerRadiusTopLeft=7, cornerRadiusTopRight=7)
+    col1, col2 = st.columns([1.2, 1.0])
+    with col1:
+        if df_retail.empty:
+            st.info("Aucune vente retail sur ce mois.")
+        else:
+            top5 = (
+                df_retail.groupby("designation", as_index=False)
+                .agg(CA=("total_ttc", "sum"))
+                .sort_values("CA", ascending=False)
+                .head(8)
+            )
+            top5["mois"] = format_mois_label(mois_focus)
+            ch_top = (
+                alt.Chart(top5)
+                .mark_bar(cornerRadiusTopLeft=8, cornerRadiusTopRight=8)
                 .encode(
-                    x=alt.X("mois_label:N", title=None, sort=months_show),
-                    xOffset=alt.XOffset("Catégorie:N"),
-                    y=alt.Y("CA:Q", title="€"),
-                    color=alt.Color("Catégorie:N", legend=alt.Legend(title=""), scale=alt.Scale(scheme="tableau10")),
-                    opacity=alt.condition(alt.datum.Période == "Historique", alt.value(1.0), alt.value(0.45)),
-                    tooltip=["mois_label:N", "Période:N", "Catégorie:N", alt.Tooltip("CA:Q", format=",.0f")]
+                    y=alt.Y("designation:N", title=None, sort="-x"),
+                    x=alt.X("CA:Q", title="€"),
+                    color=alt.value("#7c3aed"),
+                    tooltip=["designation:N", alt.Tooltip("CA:Q", format=",.0f")]
                 )
-                .properties(height=300, title="CA par catégorie — vue globale (derniers mois + prévision)")
+                .properties(height=260, title="Top produits retail (CA)")
             )
-            show_chart(alt_base() + ch_cat)
+            show_chart(alt_base() + ch_top)
 
-        # --- Projection CA abonnements (mois suivant) — KPI direction
-        st.markdown("<div class='section'></div>", unsafe_allow_html=True)
-        st.subheader("Récurrence — Abonnements récurrents (instant T)")
-
-        if not has_abos:
-            st.info("Pas de CSV inscriptions importé : impossible de calculer abonnements actifs / projection.")
+    with col2:
+        # AUTRE à corriger
+        df_autre = df_m_lines[df_m_lines["categorie"] == "AUTRE"].copy()
+        if df_autre.empty:
+            st.markdown("<div class='miniCard'><b>AUTRE</b><br><span class='muted'>Rien à corriger ce mois.</span></div>", unsafe_allow_html=True)
         else:
-            st.markdown(
-                f"<div class='muted'>Exclus : carnets 10 (Liberté), drop-in, événements. Uniquement abonnements récurrents (Reconduction ≠ Non).</div>",
-                unsafe_allow_html=True
+            autre = (
+                df_autre.groupby("designation", as_index=False)
+                .agg(CA=("total_ttc", "sum"), Qt=("quantite", "sum"))
+                .sort_values("CA", ascending=False)
             )
+            st.markdown("<div class='miniCard'><b>Produits classés AUTRE (à recatégoriser)</b></div>", unsafe_allow_html=True)
+            show_df(autre.head(12), height=245)
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Abonnements récurrents actifs", nb_sub_active)
-            col2.metric("CA mensuel estimé (actifs)", f"{sub_active['prix_effectif'].apply(to_float).sum():,.0f} €".replace(",", " "))
-            if next_label:
-                col3.metric(f"CA projeté — {next_label}", f"{ca_proj_next:,.0f} €".replace(",", " "))
+    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
+
+    # ====== Forecast 3 mois basé MRR + hypothèses
+    st.markdown("### Prévisionnel (3 mois) — basé sur MRR (abos récurrents)")
+    if not has_abos:
+        st.info("Pas de CSV importé : prévision MRR indisponible.")
+    else:
+        # churn moyen sur 3 derniers mois si possible
+        churn_default = 6.0
+        new_default = 8
+        if not churn_df.empty:
+            tmp = churn_df.dropna(subset=["churn_pct"]).tail(3)
+            if not tmp.empty:
+                churn_default = float(tmp["churn_pct"].mean())
+            tmp2 = churn_df.dropna(subset=["new"]).tail(3)
+            if not tmp2.empty:
+                new_default = int(round(tmp2["new"].mean()))
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            churn_ass = st.slider("Hypothèse churn mensuel (%)", 0.0, 25.0, float(round(churn_default, 1)), 0.5)
+        with c2:
+            new_ass = st.slider("Hypothèse nouveaux abos / mois", 0, 60, int(new_default), 1)
+        with c3:
+            arpu_ass = st.slider("ARPU utilisé (€/mois)", 10.0, 200.0, float(round(arpu_now if arpu_now else 75.0, 0)), 1.0)
+
+        start_month = mois_dispo[-1]
+        fc = forecast_mrr_3_months(actifs_now, mrr_now, arpu_ass, churn_ass, new_ass, start_month)
+
+        df_hist_mrr = None
+        if not churn_df.empty:
+            df_hist_mrr = churn_df[["mois_label", "mrr"]].rename(columns={"mrr": "MRR"}).copy()
+        else:
+            df_hist_mrr = pd.DataFrame(columns=["mois_label", "MRR"])
+
+        df_fc_mrr = fc[["mois_label", "mrr"]].rename(columns={"mrr": "MRR"}).copy()
+
+        # chart: historique (si dispo) + forecast
+        if not df_hist_mrr.empty:
+            hist = df_hist_mrr.copy()
+            hist["Type"] = "Historique"
+        else:
+            hist = pd.DataFrame(columns=["mois_label", "MRR", "Type"])
+
+        fut = df_fc_mrr.copy()
+        fut["Type"] = "Prévision"
+
+        df_plot = pd.concat([hist, fut], ignore_index=True)
+        order = list(hist["mois_label"]) + list(fut["mois_label"])
+        ch = (
+            alt.Chart(df_plot)
+            .mark_line(point=alt.OverlayMarkDef(size=65), strokeWidth=2.6)
+            .encode(
+                x=alt.X("mois_label:N", title=None, sort=order),
+                y=alt.Y("MRR:Q", title="€"),
+                color=alt.Color("Type:N", legend=alt.Legend(title=""), scale=alt.Scale(range=["#60a5fa", "#f59e0b"])),
+                strokeDash=alt.condition(alt.datum.Type == "Prévision", alt.value([6,4]), alt.value([1,0])),
+                tooltip=["mois_label:N", "Type:N", alt.Tooltip("MRR:Q", format=",.0f")]
+            )
+            .properties(height=250, title="MRR — historique + prévision (3 mois)")
+        )
+        show_chart(alt_base() + ch)
+
+        colL, colR = st.columns([1.0, 1.0])
+        with colL:
+            show_df(fc.rename(columns={"mrr": "MRR"}), height=240)
+        with colR:
+            st.markdown("<div class='miniCard'><b>Lecture direction</b><br>"
+                        "<span class='muted'>Prévision = modèle simple. Si tu veux un prévisionnel solide : "
+                        "il faudra intégrer les résiliations réelles + leads + conversion.</span></div>",
+                        unsafe_allow_html=True)
+
+    st.markdown("<div class='section'></div>", unsafe_allow_html=True)
+
+    # ====== Alertes direction (règles)
+    st.markdown("### Alertes direction (à traiter)")
+    alerts = []
+
+    # 1) churn
+    if churn_last is not None and churn_last >= churn_alert:
+        alerts.append(("Rouge", f"Churn élevé ({churn_last:.1f}%) ≥ seuil {churn_alert:.1f}% : risque rétention / expérience / pricing."))
+
+    # 2) ARPU baisse
+    if arpu_prev is not None and arpu_prev > 0:
+        drop_pct = (arpu_prev - arpu_now) / arpu_prev * 100
+        if drop_pct >= arpu_drop_alert:
+            alerts.append(("Orange", f"ARPU en baisse (-{drop_pct:.1f}%) : attention mix d'offres / remises / downgrade."))
+
+    # 3) structure CA abos/cartes
+    if share_abos < abos_share_alert:
+        alerts.append(("Orange", f"% CA Abos/Cartes trop faible ({share_abos:.1f}%) < {abos_share_alert:.1f}% : dépendance retail/one-shot, MRR fragile."))
+
+    # 4) dépendance retail top1
+    if top1_share >= top1_retail_alert:
+        alerts.append(("Orange", f"Retail dépendant d’un produit (Top1={top1_share:.1f}%) ≥ {top1_retail_alert:.1f}% : risque rupture / effet mode."))
+
+    # 5) AUTRE trop haut
+    autre_ca = float(row_m.get("CA_AUTRE", 0.0))
+    autre_pct = (autre_ca / ca_m * 100) if ca_m else 0
+    if autre_pct >= 5.0:
+        alerts.append(("Info", f"Part 'AUTRE' élevée ({autre_pct:.1f}%) : recatégoriser pour mieux piloter."))
+
+    if not alerts:
+        st.success("✅ Aucune alerte majeure détectée selon les seuils actuels.")
+    else:
+        for lvl, msg in alerts:
+            if lvl == "Rouge":
+                st.error(msg)
+            elif lvl == "Orange":
+                st.warning(msg)
             else:
-                col3.metric("CA projeté (mois suivant)", f"{ca_proj_next:,.0f} €".replace(",", " "))
+                st.info(msg)
 
-            # Distribution by offer
-            if not sub_active.empty:
-                dist = (
-                    sub_active.groupby("sous_type", as_index=False)
-                    .agg(Nb=("offre", "count"), CA=("prix_effectif", "sum"))
-                    .sort_values("CA", ascending=False)
-                )
-                dist["%"] = (dist["Nb"] / dist["Nb"].sum() * 100).round(1)
-
-                colA, colB = st.columns([1.0, 1.0])
-                with colA:
-                    ch = donut(dist.rename(columns={"sous_type": "Type", "CA": "CA"}), "Type", "CA", "Répartition des abonnements actifs (CA)")
-                    if ch is not None:
-                        show_chart(alt_base() + ch)
-                with colB:
-                    show_df(dist, height=320)
-
-        # --- Adhérents (détail)
-        st.markdown("<div class='section'></div>", unsafe_allow_html=True)
-        st.subheader("Adhérents — détail (instant T)")
-
-        if not has_abos:
-            st.info("Pas de CSV inscriptions importé.")
-        else:
-            with st.expander("Définition & règles (clique pour lire)"):
-                st.markdown(
-                    """
-                    - **Abonnements actifs** : type_contrat=ABONNEMENT, statut VALIDATED, date_debut ≤ aujourd’hui, date_fin vide ou ≥ aujourd’hui.  
-                      + **Récurrents** : Reconduction ≠ Non (vide = considéré récurrent).  
-                    - **Carnets 10 actifs** : type_contrat=CARTE_10 (Liberté), statut VALIDATED, entrées_restantes > 0.  
-                    - **Exclus** : drop-in, events.
-                    """
-                )
-
-            # Toggle: include carnets in "adhérents"
-            incl_carnets = st.checkbox("Inclure les carnets 10 dans le total adhérents", value=True, key="incl_carnets_dash")
-            total_now = nb_sub_active + (nb_carnet_active if incl_carnets else 0)
-            st.metric("Adhérents actifs (selon sélection)", total_now)
-
-            colX, colY = st.columns(2)
-            with colX:
-                st.markdown("#### Abonnements actifs (récurrents)")
-                if sub_active.empty:
-                    st.info("Aucun abonnement actif récurrent.")
-                else:
-                    cols = [c for c in ["prenom","nom","email","telephone","offre","sous_type","prix_effectif","date_debut","date_fin","reconduction","statut"] if c in sub_active.columns]
-                    show_df(sub_active[cols].sort_values(["sous_type","nom","prenom"], na_position="last"), height=360)
-
-            with colY:
-                st.markdown("#### Carnets 10 actifs (entrées restantes > 0)")
-                if not incl_carnets:
-                    st.info("Carnets exclus de la vue.")
-                else:
-                    if carnet_active.empty:
-                        st.info("Aucun carnet actif détecté.")
-                    else:
-                        cols = [c for c in ["prenom","nom","email","telephone","offre","sous_type","entrees_restantes","entrees_max","prix_effectif","date_debut","date_fin","statut"] if c in carnet_active.columns]
-                        show_df(carnet_active[cols].sort_values(["entrees_restantes","nom"], ascending=[False, True], na_position="last"), height=360)
 
 # =========================
-# VUE MENSUELLE (focus)
+# VUE MENSUELLE (TVA)
 # =========================
 
 with tab_mensuel:
     st.subheader("Vue mensuelle (TVA)")
-
     if not has_tva:
         st.warning("Aucune donnée TVA importée.")
     else:
         mois_focus = st.selectbox("Mois", mois_dispo, index=len(mois_dispo)-1, format_func=format_mois_label, key="mens_mois")
         df_m = df_hist_tva[df_hist_tva["mois"] == mois_focus].copy()
         ca = df_m["total_ttc"].sum()
-        qt = df_m["quantite"].sum()
-
-        st.markdown(
-            f"""
-            <div class="kpiGrid">
-              <div class="kpiCard">
-                <div class="kpiTitle">CA total — {format_mois_label(mois_focus)}</div>
-                <div class="kpiValue">{ca:,.0f} €</div>
-                <div class="kpiDelta"><span class="muted">Nb lignes :</span><span class="muted">{len(df_m)}</span></div>
-              </div>
-              <div class="kpiCard">
-                <div class="kpiTitle">Quantités vendues — {format_mois_label(mois_focus)}</div>
-                <div class="kpiValue">{int(qt)}</div>
-                <div class="kpiDelta"><span class="muted">—</span></div>
-              </div>
-              <div class="kpiCard">
-                <div class="kpiTitle">Top catégorie (CA)</div>
-                <div class="kpiValue">
-                  {df_m.groupby("categorie")["total_ttc"].sum().sort_values(ascending=False).index[0] if not df_m.empty else "N/A"}
-                </div>
-                <div class="kpiDelta"><span class="muted">—</span></div>
-              </div>
-              <div class="kpiCard">
-                <div class="kpiTitle">Mois</div>
-                <div class="kpiValue">{format_mois_label(mois_focus)}</div>
-                <div class="kpiDelta"><span class="muted">{mois_focus}</span></div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
 
         df_cat = (
             df_m.groupby("categorie", as_index=False)
@@ -1069,21 +1173,33 @@ with tab_mensuel:
         )
         df_cat["%"] = (df_cat["CA"] / df_cat["CA"].sum() * 100).round(1) if df_cat["CA"].sum() > 0 else 0.0
 
+        st.markdown(
+            f"""
+            <div class="kpiGrid">
+              <div class="kpiCard"><div class="kpiTitle">CA total — {format_mois_label(mois_focus)}</div><div class="kpiValue">{ca:,.0f} €</div></div>
+              <div class="kpiCard"><div class="kpiTitle">% Abos/Cartes</div><div class="kpiValue">{(df_cat[df_cat["categorie"]=="Abonnements / cartes"]["%"].sum() if not df_cat.empty else 0):.1f}%</div></div>
+              <div class="kpiCard"><div class="kpiTitle">CA retail</div><div class="kpiValue">{(ca - df_cat[df_cat["categorie"]=="Abonnements / cartes"]["CA"].sum()):,.0f} €</div></div>
+              <div class="kpiCard"><div class="kpiTitle">Nb lignes</div><div class="kpiValue">{len(df_m)}</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
         col1, col2 = st.columns([1.0, 1.0])
         with col1:
-            ch = donut(df_cat.rename(columns={"categorie": "Catégorie"}), "Catégorie", "CA", "Structure du CA (mois)")
+            ch = donut(df_cat.rename(columns={"categorie": "Catégorie"}), "Catégorie", "CA", "Structure CA (mois)")
             if ch is not None:
                 show_chart(alt_base() + ch)
         with col2:
-            show_df(df_cat, height=320)
+            show_df(df_cat, height=260)
+
 
 # =========================
-# COMPARAISON MENSUELLE
+# COMPARAISON MENSUELLE (TVA)
 # =========================
 
 with tab_comp:
     st.subheader("Comparaison mensuelle (TVA)")
-
     if not has_tva or len(mois_dispo) < 2:
         st.warning("Il faut au moins 2 mois TVA importés.")
     else:
@@ -1101,30 +1217,21 @@ with tab_comp:
             months = mois_dispo[i1:i2+1]
             df_range = summary_tva[summary_tva["mois"].isin(months)].copy()
 
-            # CA total
             df_line = df_range[["mois_label", "CA_total"]].rename(columns={"CA_total": "CA"})
-            ch = (
-                alt.Chart(df_line)
-                .mark_line(point=alt.OverlayMarkDef(size=70), strokeWidth=2.6)
-                .encode(
-                    x=alt.X("mois_label:N", title=None, sort=list(df_line["mois_label"])),
-                    y=alt.Y("CA:Q", title="€"),
-                    tooltip=["mois_label:N", alt.Tooltip("CA:Q", format=",.0f")]
-                )
-                .properties(height=280, title="CA total — période sélectionnée")
-            )
-            show_chart(alt_base() + ch)
+            ch = line_chart(df_line, "mois_label", "CA", "CA total — période sélectionnée", height=240)
+            if ch is not None:
+                show_chart(alt_base() + ch)
 
-            # comparaison catégories (grouped bars)
             cat_long = []
             for _, r in df_range.iterrows():
                 for cat in CATEGORIES_TVA:
                     cat_long.append({"mois_label": r["mois_label"], "Catégorie": cat, "CA": float(r.get(f"CA_{cat}", 0.0))})
             df_cat_long = pd.DataFrame(cat_long)
 
-            ch2 = grouped_bars(df_cat_long, "mois_label", "Catégorie", "CA", "CA par catégorie — comparaison")
+            ch2 = grouped_bars(df_cat_long, "mois_label", "Catégorie", "CA", "CA par catégorie — comparaison", height=240)
             if ch2 is not None:
                 show_chart(alt_base() + ch2)
+
 
 # =========================
 # DETAIL (produits + adhérents)
@@ -1133,7 +1240,6 @@ with tab_comp:
 with tab_detail:
     st.subheader("Détails")
 
-    # --- Produits
     st.markdown("### Produits (TVA)")
     if not has_tva:
         st.info("Pas de TVA importé.")
@@ -1153,33 +1259,18 @@ with tab_detail:
                 .agg(CA=("total_ttc", "sum"), Quantites=("quantite", "sum"))
                 .sort_values("CA", ascending=False)
             )
-            show_df(top, height=360)
+            show_df(top, height=420)
 
     st.markdown("---")
-    st.markdown("### Adhérents (CSV)")
+    st.markdown("### Abonnements récurrents actifs (CSV) — instant T")
     if not has_abos:
-        st.info("Pas de CSV inscriptions importé.")
+        st.info("Pas de CSV importé.")
     else:
         today = datetime.today().date()
-        sub_active, carnet_active = compute_active_members(df_abos, today)
-
-        st.markdown("<div class='muted'>Vue détaillée à l’instant T.</div>", unsafe_allow_html=True)
-
-        colA, colB, colC = st.columns(3)
-        colA.metric("Abonnements actifs récurrents", int(len(sub_active)))
-        colB.metric("Carnets 10 actifs", int(len(carnet_active)))
-        colC.metric("Total (abos + carnets)", int(len(sub_active) + len(carnet_active)))
-
-        st.markdown("#### Abonnements actifs récurrents — détail")
-        if sub_active.empty:
+        sub_act = compute_active_recurring_subs_at(df_abos, today)
+        st.metric("Abonnements récurrents actifs", int(len(sub_act)))
+        if sub_act.empty:
             st.info("Aucun.")
         else:
-            cols = [c for c in ["prenom","nom","email","telephone","offre","sous_type","prix_effectif","date_debut","date_fin","reconduction","statut"] if c in sub_active.columns]
-            show_df(sub_active[cols].sort_values(["sous_type","nom","prenom"], na_position="last"), height=420)
-
-        st.markdown("#### Carnets 10 actifs — détail")
-        if carnet_active.empty:
-            st.info("Aucun.")
-        else:
-            cols = [c for c in ["prenom","nom","email","telephone","offre","sous_type","entrees_restantes","entrees_max","prix_effectif","statut"] if c in carnet_active.columns]
-            show_df(carnet_active[cols].sort_values(["entrees_restantes","nom"], ascending=[False, True], na_position="last"), height=420)
+            cols = [c for c in ["prenom","nom","email","telephone","offre","sous_type","prix_effectif","date_debut","date_fin","reconduction","statut"] if c in sub_act.columns]
+            show_df(sub_act[cols].sort_values(["sous_type","nom","prenom"], na_position="last"), height=520)
